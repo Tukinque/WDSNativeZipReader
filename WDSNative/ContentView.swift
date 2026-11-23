@@ -2,24 +2,44 @@
 import SwiftUI
 import UniformTypeIdentifiers
 import WebKit
-
-// MARK: - Main View
+import UIKit
 
 struct ContentView: View {
 
     @EnvironmentObject var model: LibraryModel
+
     @State private var picker = false
+    @State private var showLogs = false
 
     var body: some View {
-        VStack(spacing: 0) {
+        ZStack(alignment: .topTrailing) {
 
             if let url = model.webURL {
+
                 WDSWebView(url: url)
-                    .ignoresSafeArea(edges: .bottom)
+                    .ignoresSafeArea()
+
+                // 진단 버튼
+                Button {
+                    showLogs = true
+                } label: {
+                    Image(systemName: "ladybug.fill")
+                        .font(.system(size: 16))
+                        .foregroundStyle(.white)
+                        .frame(width: 38, height: 38)
+                        .background(
+                            Color.black.opacity(0.65)
+                        )
+                        .clipShape(Circle())
+                }
+                .padding(.top, 12)
+                .padding(.trailing, 12)
+
             } else {
+
                 VStack(spacing: 16) {
 
-                    Text("WDS Offline")
+                    Text("WDS-StoryViewer")
                         .font(.title2)
                         .bold()
 
@@ -29,8 +49,11 @@ struct ContentView: View {
                         .multilineTextAlignment(.center)
 
                     if model.isImporting {
+
                         ProgressView("ZIP 복사 중...")
+
                     } else {
+
                         Button("리소스 ZIP 선택") {
                             picker = true
                         }
@@ -48,7 +71,9 @@ struct ContentView: View {
             isPresented: $picker,
             allowedContentTypes: [.zip]
         ) { result in
+
             switch result {
+
             case .success(let url):
                 model.importZIP(url)
 
@@ -57,28 +82,108 @@ struct ContentView: View {
                     "선택 실패: \(error.localizedDescription)"
             }
         }
+        .sheet(isPresented: $showLogs) {
+            WDSLogView()
+                .environmentObject(model)
+        }
     }
 }
 
-// MARK: - WebView
+// MARK: - 오류 기록 화면
+
+struct WDSLogView: View {
+
+    @EnvironmentObject var model: LibraryModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+
+        NavigationStack {
+
+            VStack(spacing: 12) {
+
+                Text("스토리 재생 오류 기록")
+                    .font(.headline)
+
+                Text("실행되지 않는 에피소드를 선택한 뒤 기록을 확인하세요.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+
+                ScrollView {
+
+                    Text(model.allLogs)
+                        .font(.system(
+                            size: 12,
+                            design: .monospaced
+                        ))
+                        .frame(
+                            maxWidth: .infinity,
+                            alignment: .leading
+                        )
+                        .textSelection(.enabled)
+                        .padding()
+                }
+                .background(
+                    Color(.secondarySystemBackground)
+                )
+                .clipShape(
+                    RoundedRectangle(cornerRadius: 12)
+                )
+
+                HStack {
+
+                    Button("기록 지우기") {
+                        model.clearLogs()
+                    }
+                    .buttonStyle(.bordered)
+
+                    Spacer()
+
+                    Button("전체 복사") {
+                        UIPasteboard.general.string =
+                            model.allLogs
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+            .padding()
+            .navigationTitle("WDS 진단")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+
+                ToolbarItem(
+                    placement: .topBarTrailing
+                ) {
+                    Button("닫기") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - 웹뷰
 
 struct WDSWebView: UIViewRepresentable {
 
     let url: URL
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(startURL: url)
+        Coordinator()
     }
 
-    func makeUIView(context: Context) -> UIView {
-
-        let container = UIView()
-        container.backgroundColor = .white
+    func makeUIView(
+        context: Context
+    ) -> WKWebView {
 
         let configuration = WKWebViewConfiguration()
 
         configuration.allowsInlineMediaPlayback = true
+
         configuration.mediaTypesRequiringUserActionForPlayback = []
+
         configuration.preferences
             .javaScriptCanOpenWindowsAutomatically = true
 
@@ -97,74 +202,30 @@ struct WDSWebView: UIViewRepresentable {
         webView.backgroundColor = .white
         webView.scrollView.backgroundColor = .white
 
-        webView.translatesAutoresizingMaskIntoConstraints = false
-
-        container.addSubview(webView)
-
-        NSLayoutConstraint.activate([
-            webView.topAnchor.constraint(
-                equalTo: container.topAnchor
-            ),
-            webView.bottomAnchor.constraint(
-                equalTo: container.bottomAnchor
-            ),
-            webView.leadingAnchor.constraint(
-                equalTo: container.leadingAnchor
-            ),
-            webView.trailingAnchor.constraint(
-                equalTo: container.trailingAnchor
-            )
-        ])
-
-        context.coordinator.container = container
         context.coordinator.mainWebView = webView
 
-        // 메인 페이지 실행
         webView.load(
-            URLRequest(
-                url: url,
-                cachePolicy: .reloadIgnoringLocalCacheData
-            )
+            URLRequest(url: url)
         )
 
-        return container
+        return webView
     }
 
     func updateUIView(
-        _ uiView: UIView,
+        _ uiView: WKWebView,
         context: Context
-    ) {}
-
-    static func dismantleUIView(
-        _ uiView: UIView,
-        coordinator: Coordinator
     ) {
-        coordinator.cleanup()
+        // SwiftUI 갱신 시 웹페이지를 다시 로드하지 않음
     }
 
-    // MARK: - Coordinator
+    // MARK: - 웹뷰 이벤트
 
-    final class Coordinator: NSObject,
+    final class Coordinator:
+        NSObject,
         WKUIDelegate,
         WKNavigationDelegate {
 
-        let startURL: URL
-
-        weak var container: UIView?
         weak var mainWebView: WKWebView?
-
-        private var popupWebView: WKWebView?
-        private var closeButton: UIButton?
-        private var resetButton: UIButton?
-
-        private var isResetting = false
-
-        init(startURL: URL) {
-            self.startURL = startURL
-            super.init()
-        }
-
-        // MARK: - New Window
 
         func webView(
             _ webView: WKWebView,
@@ -173,191 +234,28 @@ struct WDSWebView: UIViewRepresentable {
             windowFeatures: WKWindowFeatures
         ) -> WKWebView? {
 
-            guard navigationAction.targetFrame == nil else {
+            guard
+                navigationAction.targetFrame == nil,
+                let url = navigationAction.request.url
+            else {
                 return nil
             }
 
-            guard let container = container else {
-                return nil
-            }
-
-            // 기존 팝업이 남아 있으면 먼저 정리
-            removePopup()
-
-            let popup = WKWebView(
-                frame: .zero,
-                configuration: configuration
+            // 기존 방식처럼 같은 웹뷰에서 열기
+            webView.load(
+                URLRequest(url: url)
             )
 
-            popup.uiDelegate = self
-            popup.navigationDelegate = self
-
-            popup.scrollView
-                .contentInsetAdjustmentBehavior = .never
-
-            popup.isOpaque = false
-            popup.backgroundColor = .white
-            popup.scrollView.backgroundColor = .white
-
-            popup.translatesAutoresizingMaskIntoConstraints = false
-
-            container.addSubview(popup)
-
-            NSLayoutConstraint.activate([
-                popup.topAnchor.constraint(
-                    equalTo: container.topAnchor
-                ),
-                popup.bottomAnchor.constraint(
-                    equalTo: container.bottomAnchor
-                ),
-                popup.leadingAnchor.constraint(
-                    equalTo: container.leadingAnchor
-                ),
-                popup.trailingAnchor.constraint(
-                    equalTo: container.trailingAnchor
-                )
-            ])
-
-            popupWebView = popup
-
-            // 플레이어 닫기 버튼
-            let button = UIButton(type: .system)
-
-            button.setTitle("✕ 닫기", for: .normal)
-            button.setTitleColor(.white, for: .normal)
-            button.backgroundColor =
-                UIColor.black.withAlphaComponent(0.75)
-
-            button.layer.cornerRadius = 12
-
-            button.translatesAutoresizingMaskIntoConstraints = false
-
-            button.addTarget(
-                self,
-                action: #selector(closePopupTapped),
-                for: .touchUpInside
-            )
-
-            container.addSubview(button)
-
-            NSLayoutConstraint.activate([
-                button.topAnchor.constraint(
-                    equalTo: container.safeAreaLayoutGuide.topAnchor,
-                    constant: 12
-                ),
-                button.trailingAnchor.constraint(
-                    equalTo: container.trailingAnchor,
-                    constant: -16
-                ),
-                button.widthAnchor.constraint(
-                    equalToConstant: 90
-                ),
-                button.heightAnchor.constraint(
-                    equalToConstant: 44
-                )
-            ])
-
-            closeButton = button
-            container.bringSubviewToFront(button)
-
-            print("WDS: 새 플레이어 생성")
-
-            return popup
+            return nil
         }
-
-        // MARK: - Close Player
-
-        @objc private func closePopupTapped() {
-            closePlayerAndReset()
-        }
-
-        private func closePlayerAndReset() {
-
-            print("WDS: 플레이어 종료 및 상태 초기화")
-
-            removePopup()
-
-            // 이전 JavaScript 상태를 없애기 위해
-            // 메인 페이지를 다시 로딩
-            resetMainPage()
-        }
-
-        private func removePopup() {
-
-            if let popup = popupWebView {
-
-                popup.stopLoading()
-
-                popup.uiDelegate = nil
-                popup.navigationDelegate = nil
-
-                // 미디어 및 JavaScript 실행 중지
-                popup.loadHTMLString(
-                    "<html><body></body></html>",
-                    baseURL: nil
-                )
-
-                popup.removeFromSuperview()
-            }
-
-            popupWebView = nil
-
-            closeButton?.removeFromSuperview()
-            closeButton = nil
-        }
-
-        // MARK: - Reset Main Page
-
-        private func resetMainPage() {
-
-            guard !isResetting else {
-                return
-            }
-
-            guard let main = mainWebView else {
-                return
-            }
-
-            isResetting = true
-
-            // 현재 라우트를 가능한 한 유지
-            let currentURL = main.url ?? startURL
-
-            print(
-                "WDS: 메인 페이지 초기화:",
-                currentURL.absoluteString
-            )
-
-            main.stopLoading()
-
-            let request = URLRequest(
-                url: currentURL,
-                cachePolicy: .reloadIgnoringLocalCacheData,
-                timeoutInterval: 60
-            )
-
-            main.load(request)
-        }
-
-        // MARK: - Window Close Event
-
-        func webViewDidClose(
-            _ webView: WKWebView
-        ) {
-
-            if webView === popupWebView {
-                closePlayerAndReset()
-            }
-        }
-
-        // MARK: - Navigation
 
         func webView(
             _ webView: WKWebView,
             decidePolicyFor navigationAction: WKNavigationAction,
-            decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+            decisionHandler: @escaping (
+                WKNavigationActionPolicy
+            ) -> Void
         ) {
-
             decisionHandler(.allow)
         }
 
@@ -365,13 +263,8 @@ struct WDSWebView: UIViewRepresentable {
             _ webView: WKWebView,
             didFinish navigation: WKNavigation!
         ) {
-
-            if webView === mainWebView {
-                isResetting = false
-            }
-
             print(
-                "WDS 로딩 완료:",
+                "WDS 페이지 로딩 완료:",
                 webView.url?.absoluteString ?? ""
             )
         }
@@ -381,11 +274,6 @@ struct WDSWebView: UIViewRepresentable {
             didFail navigation: WKNavigation!,
             withError error: Error
         ) {
-
-            if webView === mainWebView {
-                isResetting = false
-            }
-
             print(
                 "WDS 로딩 오류:",
                 error.localizedDescription
@@ -397,29 +285,10 @@ struct WDSWebView: UIViewRepresentable {
             didFailProvisionalNavigation navigation: WKNavigation!,
             withError error: Error
         ) {
-
-            if webView === mainWebView {
-                isResetting = false
-            }
-
             print(
                 "WDS 연결 오류:",
                 error.localizedDescription
             )
-        }
-
-        // MARK: - Cleanup
-
-        func cleanup() {
-
-            removePopup()
-
-            mainWebView?.stopLoading()
-            mainWebView?.uiDelegate = nil
-            mainWebView?.navigationDelegate = nil
-
-            resetButton?.removeFromSuperview()
-            resetButton = nil
         }
     }
 }
