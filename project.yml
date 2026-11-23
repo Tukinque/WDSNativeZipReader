@@ -15,6 +15,7 @@ packages:
   Swifter:
     url: https://github.com/httpswift/swifter.git
     from: 1.5.0
+
   ZIPFoundation:
     url: https://github.com/weichsel/ZIPFoundation.git
     from: 0.9.0
@@ -23,26 +24,38 @@ targets:
   WDSNativeZipReader:
     type: application
     platform: iOS
+
     sources:
       - path: WDSNative
         excludes:
           - Overrides
+
       - path: WDSNative/Overrides
         type: folder
         buildPhase: resources
+
     dependencies:
       - package: Swifter
       - package: ZIPFoundation
+
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.example.WDSNativeZipReader
         GENERATE_INFOPLIST_FILE: YES
 
-        # 앱 아이콘 설정
+        # iPad 홈 화면에 표시되는 앱 이름
+        INFOPLIST_KEY_CFBundleDisplayName: "WDS-StoryViewer"
+
+        # 앱 아이콘
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
 
+        # 파일 공유 및 문서 접근
         INFOPLIST_KEY_UIFileSharingEnabled: YES
         INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace: YES
+
+        # 로컬 HTTP 서버 설정
         INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsLocalNetworking: YES
         INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsArbitraryLoads: NO
+
+        # iPad 전체 화면 강제 여부
         INFOPLIST_KEY_UIRequiresFullScreen: NO
