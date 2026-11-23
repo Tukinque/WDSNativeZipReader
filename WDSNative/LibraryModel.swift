@@ -98,14 +98,28 @@ final class LibraryModel: ObservableObject {
             }
         }
         do {
-            try http.start(port, forceIPv4: true)
-            server = http
-            webURL = URL(string: "http://127.0.0.1:\(port)/index.html#/Main")
-            status = "오프라인 서버 실행 중 — ZIP에서 필요한 파일만 읽습니다."
-        } catch {
-            status = "로컬 서버 시작 실패: \(error.localizedDescription)"
-        }
+    status = "1단계: 로컬 서버 시작 시도 중..."
+
+    try http.start(port, forceIPv4: true)
+
+    status = "2단계: 로컬 서버 시작 성공"
+
+    server = http
+
+    let urlString = "http://127.0.0.1:\(port)/index.html#/Main"
+
+    guard let url = URL(string: urlString) else {
+        status = "오류: 웹페이지 주소 생성 실패"
+        return
     }
+
+    webURL = url
+
+    status = "3단계: 웹페이지 주소 설정 완료"
+
+} catch {
+    status = "서버 시작 오류: \(error.localizedDescription)"
+}
 
     nonisolated static func mimeType(for path: String) -> String {
         switch (path as NSString).pathExtension.lowercased() {
