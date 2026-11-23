@@ -37,7 +37,7 @@ final class LibraryModel: ObservableObject {
         guard !isImporting else { return }
 
         isImporting = true
-        status = "ZIP을 앱 저장 공간으로 복사 중입니다."
+        status = "ZIP 복사 중입니다. 앱을 종료하지 마세요."
 
         let destination = archiveURL
 
@@ -91,7 +91,7 @@ final class LibraryModel: ObservableObject {
                             code: 2,
                             userInfo: [
                                 NSLocalizedDescriptionKey:
-                                    "ZIP 내부에 \(file)이 없습니다."
+                                    "ZIP 내부 파일 누락: \(file)"
                             ]
                         )
                     }
@@ -116,7 +116,6 @@ final class LibraryModel: ObservableObject {
                 await MainActor.run {
                     self.ready = true
                     self.isImporting = false
-                    self.status = "ZIP 준비 완료"
                     self.startServer()
                 }
 
@@ -159,13 +158,13 @@ final class LibraryModel: ObservableObject {
 
         http.listenAddressIPv4 = "127.0.0.1"
 
-        // 서버 자체가 정상 작동하는지 확인
+        // 기본 서버 연결 테스트
         http["/health"] = { _ in
             return .ok(.text("WDS SERVER OK"))
         }
 
-        // 모든 하위 경로를 처리
-        http["/**"] = { request in
+        // 라우터에서 처리되지 않은 모든 파일 요청 처리
+        http.notFoundHandler = { request in
 
             let rawPath =
                 request.path.removingPercentEncoding
@@ -173,12 +172,10 @@ final class LibraryModel: ObservableObject {
 
             var path = rawPath
 
-            // URL 쿼리 문자열 제거
             if let question = path.firstIndex(of: "?") {
                 path = String(path[..<question])
             }
 
-            // 맨 앞의 슬래시 제거
             while path.hasPrefix("/") {
                 path.removeFirst()
             }
@@ -187,7 +184,6 @@ final class LibraryModel: ObservableObject {
                 path = "index.html"
             }
 
-            // 경로 보안 검사
             let segments = path.split(separator: "/")
 
             guard !segments.contains(".."),
@@ -214,7 +210,6 @@ final class LibraryModel: ObservableObject {
             }
 
             guard let entry = archive[path] else {
-
                 let message = """
                 ZIP ENTRY NOT FOUND
                 Requested: \(request.path)
@@ -227,9 +222,7 @@ final class LibraryModel: ObservableObject {
                     "Not Found",
                     ["Content-Type": "text/plain; charset=utf-8"]
                 ) { writer in
-                    try writer.write(
-                        Array(message.utf8)
-                    )
+                    try writer.write(Array(message.utf8))
                 }
             }
 
@@ -257,7 +250,6 @@ final class LibraryModel: ObservableObject {
                 )
 
             } catch {
-
                 let message =
                     "ZIP EXTRACT FAILED: \(error.localizedDescription)"
 
@@ -266,14 +258,12 @@ final class LibraryModel: ObservableObject {
                     "Internal Server Error",
                     ["Content-Type": "text/plain; charset=utf-8"]
                 ) { writer in
-                    try writer.write(
-                        Array(message.utf8)
-                    )
+                    try writer.write(Array(message.utf8))
                 }
             }
         }
 
-        // MARK: - 실제 서버 실행
+        // MARK: - 서버 실행
 
         do {
             status = "로컬 서버 시작 중..."
@@ -288,7 +278,7 @@ final class LibraryModel: ObservableObject {
             guard let url = URL(
                 string: "http://127.0.0.1:\(port)/index.html#/Main"
             ) else {
-                status = "웹페이지 URL 생성 실패"
+                status = "웹페이지 주소 생성 실패"
                 return
             }
 
