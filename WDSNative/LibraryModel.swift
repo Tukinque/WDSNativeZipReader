@@ -182,6 +182,8 @@ final class LibraryModel: ObservableObject {
 
             if path.isEmpty {
                 path = "index.html"
+            } else if path.hasSuffix("/") {
+                path += "index.html"
             }
 
             let segments = path.split(separator: "/")
