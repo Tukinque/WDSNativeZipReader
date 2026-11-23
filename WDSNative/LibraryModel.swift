@@ -92,7 +92,7 @@ final class LibraryModel: ObservableObject {
                 _ = try archive.extract(entry, consumer: { chunk in
                     data.append(chunk)
                 })
-                return .data(data, contentType: mime)
+                return .ok(data, contentType: mime)
             } catch {
                 return .internalServerError
             }
