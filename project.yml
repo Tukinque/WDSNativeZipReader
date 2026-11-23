@@ -1,0 +1,39 @@
+name: WDSNativeZipReader
+options:
+  bundleIdPrefix: org.example
+  deploymentTarget:
+    iOS: '16.0'
+settings:
+  base:
+    SWIFT_VERSION: '5.9'
+    TARGETED_DEVICE_FAMILY: '2'
+packages:
+  Swifter:
+    url: https://github.com/httpswift/swifter.git
+    from: 1.5.0
+  ZIPFoundation:
+    url: https://github.com/weichsel/ZIPFoundation.git
+    from: 0.9.0
+targets:
+  WDSNativeZipReader:
+    type: application
+    platform: iOS
+    sources:
+      - path: WDSNative
+        excludes:
+          - Overrides
+      - path: WDSNative/Overrides
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - package: Swifter
+      - package: ZIPFoundation
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.example.WDSNativeZipReader
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UIFileSharingEnabled: YES
+        INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace: YES
+        INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsLocalNetworking: YES
+        INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsArbitraryLoads: NO
+        INFOPLIST_KEY_UIRequiresFullScreen: NO
