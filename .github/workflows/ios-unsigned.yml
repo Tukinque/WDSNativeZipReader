@@ -1,0 +1,46 @@
+name: Build unsigned iPad IPA
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate Xcode project
+        run: xcodegen generate
+      - name: Build unsigned device app
+        run: |
+          set -o pipefail
+          xcodebuild -project WDSNativeZipReader.xcodeproj \
+            -scheme WDSNativeZipReader \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/wds-derived" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY='' \
+            build 2>&1 | tee "$RUNNER_TEMP/build.log"
+      - name: Package unsigned IPA
+        run: |
+          mkdir -p Payload
+          cp -R "$RUNNER_TEMP/wds-derived/Build/Products/Release-iphoneos/WDSNativeZipReader.app" Payload/
+          zip -qry WDSNativeZipReader-unsigned.ipa Payload
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: WDSNativeZipReader-unsigned
+          path: WDSNativeZipReader-unsigned.ipa
+          retention-days: 7
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: ${{ runner.temp }}/build.log
+          if-no-files-found: ignore
