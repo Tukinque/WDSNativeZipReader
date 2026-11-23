@@ -37,7 +37,7 @@ final class LibraryModel: ObservableObject {
         guard !isImporting else { return }
 
         isImporting = true
-        status = "ZIP을 앱 저장 공간으로 복사하고 있습니다. 앱을 종료하지 마세요."
+        status = "ZIP을 앱 저장 공간으로 복사 중입니다."
 
         let destination = archiveURL
 
@@ -78,20 +78,27 @@ final class LibraryModel: ObservableObject {
                     )
                 }
 
-                let hasEntry =
-                    archive["index.html"] != nil &&
-                    archive["data/manifest/Episode.json"] != nil &&
-                    archive["adv-player/index.html"] != nil
+                let requiredFiles = [
+                    "index.html",
+                    "data/manifest/Episode.json",
+                    "adv-player/index.html"
+                ]
 
-                guard hasEntry else {
-                    throw NSError(
-                        domain: "WDS",
-                        code: 2,
-                        userInfo: [
-                            NSLocalizedDescriptionKey:
-                                "ZIP 루트에 index.html, data/manifest/Episode.json, adv-player/index.html이 있어야 합니다."
-                        ]
-                    )
+                for file in requiredFiles {
+                    guard archive[file] != nil else {
+                        throw NSError(
+                            domain: "WDS",
+                            code: 2,
+                            userInfo: [
+                                NSLocalizedDescriptionKey:
+                                    "ZIP 내부에 \(file)이 없습니다."
+                            ]
+                        )
+                    }
+                }
+
+                await MainActor.run {
+                    self.stopServer()
                 }
 
                 if fm.fileExists(atPath: destination.path) {
@@ -109,15 +116,11 @@ final class LibraryModel: ObservableObject {
                 await MainActor.run {
                     self.ready = true
                     self.isImporting = false
-
-                    self.status =
-                        "ZIP 준비 완료 — 압축 해제 없이 실행합니다."
-
+                    self.status = "ZIP 준비 완료"
                     self.startServer()
                 }
 
             } catch {
-
                 try? FileManager.default.removeItem(at: temp)
 
                 await MainActor.run {
@@ -129,43 +132,62 @@ final class LibraryModel: ObservableObject {
         }
     }
 
-    // MARK: - 로컬 HTTP 서버 시작
+    // MARK: - 서버 종료
+
+    private func stopServer() {
+        server?.stop()
+        server = nil
+        webURL = nil
+    }
+
+    // MARK: - 서버 시작
 
     func startServer() {
 
         guard ready else {
-            status = "오류: ZIP 파일이 준비되지 않았습니다."
+            status = "ZIP 파일이 준비되지 않았습니다."
             return
         }
 
         guard server == nil else {
-            status = "로컬 서버가 이미 실행 중입니다."
+            status = "로컬 서버 실행 중"
             return
         }
-
-        status = "0단계: 서버 준비 중..."
 
         let zipURL = archiveURL
         let http = HttpServer()
 
-        // 로컬 기기에서만 접근하도록 제한
         http.listenAddressIPv4 = "127.0.0.1"
 
-        // ZIP 내부 파일을 HTTP로 제공
-        http["/(.*)"] = { request in
+        // 서버 자체가 정상 작동하는지 확인
+        http["/health"] = { _ in
+            return .ok(.text("WDS SERVER OK"))
+        }
+
+        // 모든 하위 경로를 처리
+        http["/**"] = { request in
 
             let rawPath =
                 request.path.removingPercentEncoding
                 ?? request.path
 
-            var path = rawPath.trimmingCharacters(
-                in: CharacterSet(charactersIn: "/")
-            )
+            var path = rawPath
+
+            // URL 쿼리 문자열 제거
+            if let question = path.firstIndex(of: "?") {
+                path = String(path[..<question])
+            }
+
+            // 맨 앞의 슬래시 제거
+            while path.hasPrefix("/") {
+                path.removeFirst()
+            }
 
             if path.isEmpty {
                 path = "index.html"
             }
 
+            // 경로 보안 검사
             let segments = path.split(separator: "/")
 
             guard !segments.contains(".."),
@@ -174,14 +196,41 @@ final class LibraryModel: ObservableObject {
                 return .badRequest(nil)
             }
 
-            let mime = Self.mimeType(for: path)
+            let mime = LibraryModel.mimeType(for: path)
 
             guard let archive = Archive(
                 url: zipURL,
                 accessMode: .read
-            ),
-            let entry = archive[path] else {
-                return .notFound
+            ) else {
+                return .raw(
+                    500,
+                    "Internal Server Error",
+                    ["Content-Type": "text/plain; charset=utf-8"]
+                ) { writer in
+                    try writer.write(
+                        Array("ZIP OPEN FAILED".utf8)
+                    )
+                }
+            }
+
+            guard let entry = archive[path] else {
+
+                let message = """
+                ZIP ENTRY NOT FOUND
+                Requested: \(request.path)
+                Converted: \(path)
+                ZIP exists: \(FileManager.default.fileExists(atPath: zipURL.path))
+                """
+
+                return .raw(
+                    404,
+                    "Not Found",
+                    ["Content-Type": "text/plain; charset=utf-8"]
+                ) { writer in
+                    try writer.write(
+                        Array(message.utf8)
+                    )
+                }
             }
 
             do {
@@ -208,35 +257,43 @@ final class LibraryModel: ObservableObject {
                 )
 
             } catch {
-                return .internalServerError
+
+                let message =
+                    "ZIP EXTRACT FAILED: \(error.localizedDescription)"
+
+                return .raw(
+                    500,
+                    "Internal Server Error",
+                    ["Content-Type": "text/plain; charset=utf-8"]
+                ) { writer in
+                    try writer.write(
+                        Array(message.utf8)
+                    )
+                }
             }
         }
 
-        // MARK: 서버 진단
+        // MARK: - 실제 서버 실행
 
         do {
-            status = "1단계: 로컬 서버 시작 시도 중..."
+            status = "로컬 서버 시작 중..."
 
             try http.start(
                 port,
                 forceIPv4: true
             )
 
-            status = "2단계: 로컬 서버 시작 성공"
-
             server = http
 
-            let urlString =
-                "http://127.0.0.1:\(port)/index.html#/Main"
-
-            guard let url = URL(string: urlString) else {
-                status = "오류: 웹페이지 주소 생성 실패"
+            guard let url = URL(
+                string: "http://127.0.0.1:\(port)/index.html#/Main"
+            ) else {
+                status = "웹페이지 URL 생성 실패"
                 return
             }
 
             webURL = url
-
-            status = "3단계: 웹페이지 주소 설정 완료"
+            status = "로컬 서버 실행 중 — ZIP 직접 읽기"
 
         } catch {
             status =
