@@ -4,16 +4,13 @@ import UniformTypeIdentifiers
 import WebKit
 
 struct ContentView: View {
-
     @EnvironmentObject var model: LibraryModel
+
     @State private var picker = false
-    @State private var webStatus = "웹페이지 대기 중..."
-    @State private var webError = ""
+    @State private var diagnostics = "웹페이지 진단 대기 중..."
 
     var body: some View {
-
         VStack(spacing: 8) {
-
             HStack {
                 Text("WDS Offline")
                     .font(.headline)
@@ -33,34 +30,23 @@ struct ContentView: View {
                 .padding(.horizontal)
 
             if let url = model.webURL {
-
-                VStack(spacing: 4) {
-
-                    Text(webStatus)
-                        .font(.caption)
-                        .foregroundStyle(.blue)
-
-                    if !webError.isEmpty {
-                        ScrollView {
-                            Text(webError)
-                                .font(.caption2)
-                                .foregroundStyle(.red)
-                                .textSelection(.enabled)
-                        }
-                        .frame(maxHeight: 130)
-                        .padding(8)
-                    }
+                ScrollView {
+                    Text(diagnostics)
+                        .font(.system(size: 11, design: .monospaced))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
                 }
+                .frame(height: 220)
+                .padding(8)
+                .background(Color.gray.opacity(0.1))
+                .cornerRadius(8)
                 .padding(.horizontal)
 
                 WDSWebView(
                     url: url,
-                    status: $webStatus,
-                    error: $webError
+                    diagnostics: $diagnostics
                 )
-
             } else {
-
                 Spacer()
 
                 Text("기존 리소스 ZIP을 iPad의 파일 앱에서 선택하세요.")
@@ -82,9 +68,7 @@ struct ContentView: View {
             isPresented: $picker,
             allowedContentTypes: [.zip]
         ) { result in
-
             switch result {
-
             case .success(let url):
                 model.importZIP(url)
 
@@ -96,84 +80,96 @@ struct ContentView: View {
     }
 }
 
-// MARK: - WKWebView
-
 struct WDSWebView: UIViewRepresentable {
-
     let url: URL
-    @Binding var status: String
-    @Binding var error: String
+    @Binding var diagnostics: String
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
     }
 
     func makeUIView(context: Context) -> WKWebView {
-
         let configuration = WKWebViewConfiguration()
 
         configuration.allowsInlineMediaPlayback = true
         configuration.mediaTypesRequiringUserActionForPlayback = []
 
-        let contentController = WKUserContentController()
+        let controller = WKUserContentController()
 
-        let diagnosticScript = """
+        let script = """
         (function() {
-            function report(message) {
-                window.webkit.messageHandlers.wdsDiagnostics.postMessage(
-                    String(message)
+            function report(value) {
+                window.webkit.messageHandlers.wdsDebug.postMessage(
+                    String(value)
                 );
             }
 
-            window.addEventListener('error', function(event) {
+            window.addEventListener("error", function(e) {
                 report(
-                    'JS 오류: ' +
-                    event.message +
-                    ' / ' +
-                    event.filename +
-                    ':' +
-                    event.lineno
+                    "JS ERROR: " + e.message +
+                    " @ " + e.filename + ":" + e.lineno
                 );
-            });
+            }, true);
 
             window.addEventListener(
-                'unhandledrejection',
-                function(event) {
-                    report(
-                        'Promise 오류: ' +
-                        String(event.reason)
-                    );
+                "unhandledrejection",
+                function(e) {
+                    report("PROMISE ERROR: " + String(e.reason));
                 }
             );
+
+            const originalFetch = window.fetch;
+
+            window.fetch = function() {
+                const target = arguments[0];
+
+                return originalFetch.apply(this, arguments)
+                    .then(function(response) {
+                        if (!response.ok) {
+                            report(
+                                "FETCH HTTP " + response.status +
+                                ": " + response.url
+                            );
+                        }
+                        return response;
+                    })
+                    .catch(function(error) {
+                        report(
+                            "FETCH FAILED: " +
+                            String(target) + " / " + String(error)
+                        );
+                        throw error;
+                    });
+            };
         })();
         """
 
-        contentController.addUserScript(
+        controller.addUserScript(
             WKUserScript(
-                source: diagnosticScript,
+                source: script,
                 injectionTime: .atDocumentStart,
                 forMainFrameOnly: false
             )
         )
 
-        contentController.add(
+        controller.add(
             context.coordinator,
-            name: "wdsDiagnostics"
+            name: "wdsDebug"
         )
 
-        configuration.userContentController = contentController
+        configuration.userContentController = controller
 
-        let view = WKWebView(
+        let webView = WKWebView(
             frame: .zero,
             configuration: configuration
         )
 
-        view.navigationDelegate = context.coordinator
-        view.scrollView.contentInsetAdjustmentBehavior = .never
+        webView.navigationDelegate = context.coordinator
+        webView.scrollView.contentInsetAdjustmentBehavior = .never
 
-        view.load(URLRequest(url: url))
+        webView.load(URLRequest(url: url))
 
-        return view
+        return webView
     }
 
     func updateUIView(
@@ -183,27 +179,27 @@ struct WDSWebView: UIViewRepresentable {
         context.coordinator.parent = self
     }
 
-    // MARK: - 진단 처리
-
     final class Coordinator: NSObject,
         WKNavigationDelegate,
         WKScriptMessageHandler {
 
         var parent: WDSWebView
+        private var messages: [String] = []
 
         init(_ parent: WDSWebView) {
             self.parent = parent
         }
 
-        private func updateStatus(_ message: String) {
+        private func log(_ message: String) {
             DispatchQueue.main.async {
-                self.parent.status = message
-            }
-        }
+                self.messages.append(message)
 
-        private func updateError(_ message: String) {
-            DispatchQueue.main.async {
-                self.parent.error = message
+                if self.messages.count > 35 {
+                    self.messages.removeFirst()
+                }
+
+                self.parent.diagnostics =
+                    self.messages.joined(separator: "\n")
             }
         }
 
@@ -211,7 +207,7 @@ struct WDSWebView: UIViewRepresentable {
             _ webView: WKWebView,
             didStartProvisionalNavigation navigation: WKNavigation!
         ) {
-            updateStatus("웹페이지 연결 시도 중...")
+            log("START: \(webView.url?.absoluteString ?? "nil")")
         }
 
         func webView(
@@ -219,18 +215,11 @@ struct WDSWebView: UIViewRepresentable {
             didReceive response: WKNavigationResponse,
             decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void
         ) {
-
             if let http = response.response as? HTTPURLResponse {
-
-                let code = http.statusCode
-
-                updateStatus("HTTP 응답 코드: \(code)")
-
-                if code >= 400 {
-                    updateError(
-                        "HTTP 오류 \(code): \(http.url?.absoluteString ?? "")"
-                    )
-                }
+                log(
+                    "MAIN HTTP: \(http.statusCode) " +
+                    "\(http.url?.absoluteString ?? "")"
+                )
             }
 
             decisionHandler(.allow)
@@ -240,19 +229,74 @@ struct WDSWebView: UIViewRepresentable {
             _ webView: WKWebView,
             didFinish navigation: WKNavigation!
         ) {
-            updateStatus("HTML 로딩 완료")
+            log("DID FINISH")
 
-            webView.evaluateJavaScript(
-                "document.title"
-            ) { result, error in
+            let js = """
+            (async function() {
+                const lines = [];
 
+                lines.push("URL: " + location.href);
+                lines.push("TITLE: " + document.title);
+                lines.push(
+                    "READY: " + document.readyState
+                );
+
+                lines.push(
+                    "HTML LENGTH: " +
+                    (document.documentElement?.outerHTML.length ?? 0)
+                );
+
+                lines.push(
+                    "APP EXISTS: " +
+                    Boolean(document.getElementById("app"))
+                );
+
+                lines.push(
+                    "APP CONTENT LENGTH: " +
+                    (document.getElementById("app")?.innerHTML.length ?? -1)
+                );
+
+                const paths = [
+                    "/index.html",
+                    "/assets/index-RGQwKqYa.js",
+                    "/assets/index-D3QgVVEv.css",
+                    "/data/manifest/Episode.json"
+                ];
+
+                for (const path of paths) {
+                    try {
+                        const response = await fetch(path, {
+                            cache: "no-store"
+                        });
+
+                        const content = await response.arrayBuffer();
+
+                        lines.push(
+                            "RESOURCE " + response.status +
+                            " / " + content.byteLength +
+                            " bytes: " + path
+                        );
+                    } catch (error) {
+                        lines.push(
+                            "RESOURCE ERROR: " + path +
+                            " / " + String(error)
+                        );
+                    }
+                }
+
+                return lines.join("\\n");
+            })();
+            """
+
+            webView.evaluateJavaScript(js) { result, error in
                 if let error = error {
-                    self.updateError(
-                        "JavaScript 확인 오류: \(error.localizedDescription)"
+                    self.log(
+                        "DIAGNOSTIC ERROR: " +
+                        error.localizedDescription
                     )
                 } else {
-                    self.updateStatus(
-                        "HTML 로딩 완료 / 제목: \(result ?? "")"
+                    self.log(
+                        String(describing: result ?? "nil")
                     )
                 }
             }
@@ -263,8 +307,7 @@ struct WDSWebView: UIViewRepresentable {
             didFailProvisionalNavigation navigation: WKNavigation!,
             withError error: Error
         ) {
-            updateStatus("웹페이지 연결 실패")
-            updateError(error.localizedDescription)
+            log("CONNECT ERROR: \(error.localizedDescription)")
         }
 
         func webView(
@@ -272,26 +315,20 @@ struct WDSWebView: UIViewRepresentable {
             didFail navigation: WKNavigation!,
             withError error: Error
         ) {
-            updateStatus("웹페이지 로딩 실패")
-            updateError(error.localizedDescription)
+            log("LOAD ERROR: \(error.localizedDescription)")
         }
 
         func webViewWebContentProcessDidTerminate(
             _ webView: WKWebView
         ) {
-            updateStatus("웹 콘텐츠 프로세스 종료")
-            updateError(
-                "WKWebView 프로세스가 종료되었습니다. 메모리 부족이나 웹 콘텐츠 오류일 수 있습니다."
-            )
+            log("WEB CONTENT PROCESS TERMINATED")
         }
 
         func userContentController(
             _ userContentController: WKUserContentController,
             didReceive message: WKScriptMessage
         ) {
-            updateError(
-                String(describing: message.body)
-            )
+            log(String(describing: message.body))
         }
     }
 }
