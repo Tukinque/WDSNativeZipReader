@@ -11,14 +11,16 @@ final class LibraryModel: ObservableObject {
     @Published var ready = false
     @Published var webURL: URL?
 
+    // 앱에서 확인할 수 있는 오류 기록
+    @Published var errorLogs: [String] = []
+
     private var server: HttpServer?
     private let port: UInt16 = 8765
 
     private var archiveURL: URL {
-        FileManager.default.urls(
-            for: .documentDirectory,
-            in: .userDomainMask
-        )[0].appendingPathComponent("resources.zip")
+        FileManager.default
+            .urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("resources.zip")
     }
 
     init() {
@@ -29,6 +31,36 @@ final class LibraryModel: ObservableObject {
         if ready {
             startServer()
         }
+    }
+
+    // MARK: - 오류 기록
+
+    func addLog(_ message: String) {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+
+        let timestamp = formatter.string(from: Date())
+        let line = "[\(timestamp)] \(message)"
+
+        errorLogs.append(line)
+
+        // 메모리 사용량 제한
+        if errorLogs.count > 200 {
+            errorLogs.removeFirst(errorLogs.count - 200)
+        }
+
+        print("WDS: \(line)")
+    }
+
+    func clearLogs() {
+        errorLogs.removeAll()
+    }
+
+    var allLogs: String {
+        if errorLogs.isEmpty {
+            return "아직 기록된 요청이나 오류가 없습니다."
+        }
+        return errorLogs.joined(separator: "\n")
     }
 
     // MARK: - ZIP 가져오기
@@ -42,8 +74,8 @@ final class LibraryModel: ObservableObject {
         let destination = archiveURL
 
         Task.detached(priority: .userInitiated) {
-
-            let granted = source.startAccessingSecurityScopedResource()
+            let granted =
+                source.startAccessingSecurityScopedResource()
 
             defer {
                 if granted {
@@ -116,6 +148,7 @@ final class LibraryModel: ObservableObject {
                 await MainActor.run {
                     self.ready = true
                     self.isImporting = false
+                    self.addLog("ZIP 가져오기 완료")
                     self.startServer()
                 }
 
@@ -126,12 +159,13 @@ final class LibraryModel: ObservableObject {
                     self.isImporting = false
                     self.status =
                         "가져오기 실패: \(error.localizedDescription)"
+                    self.addLog(self.status)
                 }
             }
         }
     }
 
-    // MARK: - 서버 종료
+    // MARK: - 서버 중지
 
     private func stopServer() {
         server?.stop()
@@ -139,10 +173,9 @@ final class LibraryModel: ObservableObject {
         webURL = nil
     }
 
-    // MARK: - 서버 시작
+    // MARK: - 로컬 HTTP 서버
 
     func startServer() {
-
         guard ready else {
             status = "ZIP 파일이 준비되지 않았습니다."
             return
@@ -158,13 +191,12 @@ final class LibraryModel: ObservableObject {
 
         http.listenAddressIPv4 = "127.0.0.1"
 
-        // 기본 서버 연결 테스트
         http["/health"] = { _ in
             return .ok(.text("WDS SERVER OK"))
         }
 
-        // 라우터에서 처리되지 않은 모든 파일 요청 처리
-        http.notFoundHandler = { request in
+        // 기존 서버에서 정상 동작했던 notFoundHandler 유지
+        http.notFoundHandler = { [weak self] request in
 
             let rawPath =
                 request.path.removingPercentEncoding
@@ -188,18 +220,63 @@ final class LibraryModel: ObservableObject {
 
             let segments = path.split(separator: "/")
 
-            guard !segments.contains(".."),
-                  !path.contains("\\"),
-                  !path.contains("\0") else {
+            guard
+                !segments.contains(".."),
+                !path.contains("\\"),
+                !path.contains("\0")
+            else {
                 return .badRequest(nil)
             }
 
-            let mime = LibraryModel.mimeType(for: path)
+            // 요청 중 중요한 파일만 기록
+            if path.hasPrefix("data/episode/")
+                || path.hasPrefix("data/voice/")
+                || path.hasPrefix("data/movie/") {
 
+                Self.record(
+                    "요청: \(path)",
+                    model: self
+                )
+            }
+
+            let mime = Self.mimeType(for: path)
+
+            // MARK: Overrides 우선 적용
+            // GitHub에 올려둔 플레이어 수정 파일을 사용
+            if let root = Bundle.main.resourceURL {
+
+                let overrideURL = root
+                    .appendingPathComponent("Overrides")
+                    .appendingPathComponent(path)
+
+                if FileManager.default.fileExists(
+                    atPath: overrideURL.path
+                ) {
+                    do {
+                        let data = try Data(contentsOf: overrideURL)
+
+                        return .ok(
+                            .data(data, contentType: mime)
+                        )
+                    } catch {
+                        Self.record(
+                            "OVERRIDE 읽기 실패: \(path) / \(error.localizedDescription)",
+                            model: self
+                        )
+                    }
+                }
+            }
+
+            // MARK: ZIP 열기
             guard let archive = Archive(
                 url: zipURL,
                 accessMode: .read
             ) else {
+                Self.record(
+                    "ZIP 열기 실패",
+                    model: self
+                )
+
                 return .raw(
                     500,
                     "Internal Server Error",
@@ -211,7 +288,14 @@ final class LibraryModel: ObservableObject {
                 }
             }
 
+            // MARK: 파일 존재 확인
             guard let entry = archive[path] else {
+
+                Self.record(
+                    "404 파일 없음: \(path)",
+                    model: self
+                )
+
                 let message = """
                 ZIP ENTRY NOT FOUND
                 Requested: \(request.path)
@@ -228,16 +312,12 @@ final class LibraryModel: ObservableObject {
                 }
             }
 
+            // MARK: ZIP에서 파일 추출
             do {
                 var data = Data()
 
                 data.reserveCapacity(
-                    Int(
-                        min(
-                            entry.uncompressedSize,
-                            8 * 1024 * 1024
-                        )
-                    )
+                    Int(min(entry.uncompressedSize, 8 * 1024 * 1024))
                 )
 
                 _ = try archive.extract(
@@ -252,6 +332,11 @@ final class LibraryModel: ObservableObject {
                 )
 
             } catch {
+                Self.record(
+                    "500 파일 추출 실패: \(path) / \(error.localizedDescription)",
+                    model: self
+                )
+
                 let message =
                     "ZIP EXTRACT FAILED: \(error.localizedDescription)"
 
@@ -265,15 +350,11 @@ final class LibraryModel: ObservableObject {
             }
         }
 
-        // MARK: - 서버 실행
-
+        // MARK: 서버 시작
         do {
             status = "로컬 서버 시작 중..."
 
-            try http.start(
-                port,
-                forceIPv4: true
-            )
+            try http.start(port, forceIPv4: true)
 
             server = http
 
@@ -287,9 +368,22 @@ final class LibraryModel: ObservableObject {
             webURL = url
             status = "로컬 서버 실행 중 — ZIP 직접 읽기"
 
+            addLog("서버 시작 완료")
+
         } catch {
-            status =
-                "서버 시작 오류: \(error.localizedDescription)"
+            status = "서버 시작 오류: \(error.localizedDescription)"
+            addLog(status)
+        }
+    }
+
+    // MARK: - 서버 스레드에서 기록 전달
+
+    nonisolated private static func record(
+        _ message: String,
+        model: LibraryModel?
+    ) {
+        Task { @MainActor in
+            model?.addLog(message)
         }
     }
 
