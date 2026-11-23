@@ -4,6 +4,8 @@ import UniformTypeIdentifiers
 import WebKit
 import UIKit
 
+// MARK: - 메인 화면
+
 struct ContentView: View {
 
     @EnvironmentObject var model: LibraryModel
@@ -12,6 +14,7 @@ struct ContentView: View {
     @State private var showLogs = false
 
     var body: some View {
+
         ZStack(alignment: .topTrailing) {
 
             if let url = model.webURL {
@@ -19,21 +22,18 @@ struct ContentView: View {
                 WDSWebView(url: url)
                     .ignoresSafeArea()
 
-                // 진단 버튼
-                Button {
-                    showLogs = true
-                } label: {
-                    Image(systemName: "ladybug.fill")
-                        .font(.system(size: 16))
-                        .foregroundStyle(.white)
-                        .frame(width: 38, height: 38)
-                        .background(
-                            Color.black.opacity(0.65)
-                        )
-                        .clipShape(Circle())
-                }
-                .padding(.top, 12)
-                .padding(.trailing, 12)
+                // 숨겨진 디버그 영역
+                // 오른쪽 위를 3초간 누르면 로그 창 열기
+                Color.clear
+                    .frame(width: 65, height: 65)
+                    .contentShape(Rectangle())
+                    .onLongPressGesture(
+                        minimumDuration: 3
+                    ) {
+                        showLogs = true
+                    }
+                    .padding(.top, 5)
+                    .padding(.trailing, 5)
 
             } else {
 
@@ -89,7 +89,7 @@ struct ContentView: View {
     }
 }
 
-// MARK: - 오류 기록 화면
+// MARK: - 디버그 로그 화면
 
 struct WDSLogView: View {
 
@@ -105,7 +105,7 @@ struct WDSLogView: View {
                 Text("스토리 재생 오류 기록")
                     .font(.headline)
 
-                Text("실행되지 않는 에피소드를 선택한 뒤 기록을 확인하세요.")
+                Text("오른쪽 위를 3초간 누르면 이 화면을 다시 열 수 있습니다.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -113,10 +113,12 @@ struct WDSLogView: View {
                 ScrollView {
 
                     Text(model.allLogs)
-                        .font(.system(
-                            size: 12,
-                            design: .monospaced
-                        ))
+                        .font(
+                            .system(
+                                size: 12,
+                                design: .monospaced
+                            )
+                        )
                         .frame(
                             maxWidth: .infinity,
                             alignment: .leading
@@ -241,7 +243,6 @@ struct WDSWebView: UIViewRepresentable {
                 return nil
             }
 
-            // 기존 방식처럼 같은 웹뷰에서 열기
             webView.load(
                 URLRequest(url: url)
             )
